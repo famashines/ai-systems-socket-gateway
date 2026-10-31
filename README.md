@@ -99,11 +99,9 @@ Topics: `tasks`, `task:<id>`, `conversation:<id>`, `budget`, `agents`,
 - No topic is forbidden in M1 (one owner), so `4403` is not used yet.
 - `unsubscribe` gives `unsubscribed { topics }` with the topics of the
   request, also the topics that were not subscribed. It comes after the
-  consumer runs with the new filter, so no notice or delta of a removed
-  topic comes after it.
-
-### Sequences
-
+  consumer runs with the new filter, so no notice of a removed topic comes
+  after it. A delta that was already on its way can still come (deltas are
+  best effort, ADR 0019).
 - `welcome.headSeq` is the last sequence of `VIEWS` at `hello`.
 - On the first connect the app omits `hello.lastSeq`. `lastSeq: 0` is valid
   in contracts v0.3.0, but it replays the whole stream.
