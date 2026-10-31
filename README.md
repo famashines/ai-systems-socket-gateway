@@ -159,6 +159,9 @@ have no `seq` and are best effort (ADR 0019).
 - One ordered consumer for each connection. ADR 0025 plans `max_consumers`
   64 on `VIEWS`, so a pod then serves at most 64 connections at a time
   (minus other readers of `VIEWS`). Enough for one owner with a few devices.
+- After a crash of the pod, its consumers are not deleted. NATS removes
+  them after 5 minutes with no activity (`inactive_threshold` of the
+  ordered consumer). Until then they count against that limit.
 - A slow consumer (`4408`) or a shutdown close waits for the close
   handshake. `ws` terminates a slow consumer after 30 s; a shutdown
   terminates the sockets that remain after 2 s.
