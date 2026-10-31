@@ -1,4 +1,4 @@
-import { createJwtVerifier } from "@famashines/ai-systems-kit/auth";
+import { createJwtVerifier, type JwtVerifierOptions } from "@famashines/ai-systems-kit/auth";
 import { commonEnv, loadConfig } from "@famashines/ai-systems-kit/config";
 import { createService } from "@famashines/ai-systems-kit/http";
 import { createLogger, startTelemetry } from "@famashines/ai-systems-kit/observability";
@@ -21,6 +21,7 @@ export const envSchema = commonEnv.omit({ SERVICE_NAME: true }).extend({
   NATS_USER: z.string().min(1),
   NATS_PASSWORD: z.string().min(1),
   OIDC_ISSUER: httpUrl.default("https://auth.famashines.com/realms/ai-systems"),
+  OIDC_JWKS_URL: httpUrl.optional(),
   OIDC_AUDIENCE: z.string().min(1).default("ai-systems-app"),
   REQUIRED_ROLE: z.string().min(1).default("owner"),
   ALLOWED_ORIGINS: z
@@ -42,6 +43,13 @@ export const envSchema = commonEnv.omit({ SERVICE_NAME: true }).extend({
 });
 
 export type Config = z.output<typeof envSchema>;
+
+export const verifierOptions = (config: Readonly<Config>): JwtVerifierOptions => ({
+  issuer: config.OIDC_ISSUER,
+  audience: config.OIDC_AUDIENCE,
+  requiredRole: config.REQUIRED_ROLE,
+  ...(config.OIDC_JWKS_URL === undefined ? {} : { jwksUrl: config.OIDC_JWKS_URL }),
+});
 
 export interface StartOptions {
   drainDelayMs?: number;
@@ -79,12 +87,7 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
   const gateway = attachGateway({
     server: app.server,
     views,
-    verify: createJwtVerifier({
-      issuer: config.OIDC_ISSUER,
-      audience: config.OIDC_AUDIENCE,
-      requiredRole: config.REQUIRED_ROLE,
-      logger,
-    }),
+    verify: createJwtVerifier({ ...verifierOptions(config), logger }),
     allowedOrigins: config.ALLOWED_ORIGINS,
     logger,
     limits: {
