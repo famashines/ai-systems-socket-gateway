@@ -180,6 +180,19 @@ have no `seq` and are best effort (ADR 0019).
 | `ws_view_messages_invalid_total`  |          |
 | `ws_consumer_stop_failures_total` |          |
 
+## Release
+
+When `ci` passes on a push to `main`, `.github/workflows/release.yml`
+builds the image of that commit, makes a CycloneDX SBOM (a workflow
+artifact), and scans the image with grype. A HIGH or CRITICAL finding that
+has a fix stops the release. Findings with no fix do not stop it; they are
+in the job log. Then it pushes `ghcr.io/famashines/ai-systems-socket-gateway:sha-<commit>`
+and opens or updates the pull request from the branch
+`release/ai-systems-socket-gateway-prod` in `famashines/gitops`. That pull request sets the
+tag and the digest in `kubernetes/ai-systems/ai-systems-socket-gateway/prod`. The owner
+merges it. The job needs the org secret `GITOPS_TOKEN` with access to this
+repo. A manual run (`workflow_dispatch`) works only on `main`.
+
 ## Known limits
 
 - One ordered consumer for each connection. ADR 0025 plans `max_consumers`
