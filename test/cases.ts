@@ -4,18 +4,20 @@ import { after, before, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { viewSubject, type Topic } from "@famashines/ai-systems-contracts";
 import { waitFor } from "@famashines/ai-systems-kit/testing";
-import type { Timers } from "../src/gateway.ts";
+import type { Limits, Timers } from "../src/gateway.ts";
 import type { StreamHead } from "../src/protocol.ts";
 import { connect, startJwks, taskTopic, type Client, type Jwks } from "./support.ts";
 
 export interface Running {
   url: string;
+  connections(): number;
   stop(): Promise<boolean>;
 }
 
 export interface StartOptions {
   issuer: string;
   timers?: Partial<Timers>;
+  limits?: Partial<Limits>;
   allowedOrigins?: string[];
 }
 
@@ -27,6 +29,12 @@ export interface Backend {
   trimBefore(seq: number): Promise<void>;
   close(): Promise<void>;
 }
+
+const paused = (c: Client) => {
+  const socket = (c.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+  socket.pause();
+  return socket;
+};
 
 export const viewMessage = (topic: Topic, docId: string, rev: number, data: unknown = {}) => ({
   eventId: randomUUID(),
@@ -86,6 +94,7 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     main = await backend.start({
       issuer: jwks.issuer,
       allowedOrigins: ["http://allowed.test"],
+      limits: { maxConnections: 1000, maxPerSubject: 1000 },
     });
   });
 
@@ -173,6 +182,27 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     assert.equal(
       second.c.frames.some((f) => f.type === "resync"),
       false,
+    );
+  });
+
+  test(`${name}: resume covers each topic subscribed before the first notice`, async () => {
+    const task = taskTopic();
+    const first = await ready();
+    await subscribed(first.c, ["tasks", task]);
+    const seen = await notice(task);
+    await first.c.next("notice");
+    await first.c.close();
+    const missed = [await notice(task), await notice(task)];
+    const second = await ready(seen);
+    assert.equal((await subscribed(second.c, ["tasks"])).fromSeq, seen + 1);
+    assert.equal((await subscribed(second.c, [task])).fromSeq, seen + 1);
+    await waitFor(() => second.c.notices().length >= 2, 5000, 10);
+    const live = await notice(task);
+    await waitFor(() => second.c.notices().length >= 3, 5000, 10);
+    await sleep(100);
+    assert.deepEqual(
+      second.c.notices().map((n) => n.seq),
+      [...missed, live],
     );
   });
 
@@ -348,12 +378,12 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     const task = taskTopic();
     const taskId = task.slice(5);
     const callId = randomUUID();
-    const { c } = await ready();
+    const running = await gateway({ timers: { closeGraceMs: 60_000 } });
+    const { c } = await ready(undefined, running);
     await subscribed(c, [task]);
     c.send({ type: "ping", t: 0 });
     await c.next("pong");
-    const socket = (c.ws as unknown as { _socket: { pause(): void; resume(): void } })._socket;
-    socket.pause();
+    const socket = paused(c);
     const big = "x".repeat(60_000);
     let deltas = 0;
     for (let i = 0; i < 600; i += 1) {
@@ -369,6 +399,50 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
       c.frames.slice(-20).every((f) => f.type === "notice"),
       "the last frames before the close are notices",
     );
+  });
+
+  test(`${name}: a slow consumer that does not read is terminated after the close grace`, async () => {
+    const task = taskTopic();
+    const running = await gateway({ timers: { closeGraceMs: 200 } });
+    const { c } = await ready(undefined, running);
+    await subscribed(c, [task]);
+    c.send({ type: "ping", t: 0 });
+    await c.next("pong");
+    paused(c);
+    const big = "x".repeat(60_000);
+    for (let i = 0; i < 2000 && running.connections() > 0; i += 1) {
+      await notice(task, randomUUID(), 1, big);
+    }
+    await waitFor(() => running.connections() === 0, 5000, 20);
+  });
+
+  test(`${name}: a client with no hello that does not read is terminated after the grace`, async () => {
+    const running = await gateway({ timers: { helloTimeoutMs: 100, closeGraceMs: 100 } });
+    const c = await client({}, running);
+    paused(c);
+    assert.equal(running.connections(), 1);
+    await waitFor(() => running.connections() === 0, 2000, 20);
+  });
+
+  test(`${name}: more than maxPerSubject sockets of one sub close 4429`, async () => {
+    const running = await gateway({ limits: { maxPerSubject: 2 } });
+    await ready(undefined, running);
+    await ready(undefined, running);
+    const third = await client({}, running);
+    third.send({ type: "hello", v: 1, token: await jwks.token() });
+    assert.equal((await third.closed).code, 4429);
+    const other = await client({}, running);
+    other.send({ type: "hello", v: 1, token: await jwks.token({ sub: "owner-2" }) });
+    await other.next("welcome");
+  });
+
+  test(`${name}: more than maxConnections sockets close the new one with 1013`, async () => {
+    const running = await gateway({ limits: { maxConnections: 2 } });
+    await ready(undefined, running);
+    await client({}, running);
+    const third = await client({}, running);
+    assert.equal((await third.closed).code, 1013);
+    await waitFor(() => running.connections() === 2, 2000, 20);
   });
 
   test(`${name}: an Origin that is not allowed gets 403, other paths 404`, async () => {

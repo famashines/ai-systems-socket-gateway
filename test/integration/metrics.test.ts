@@ -11,7 +11,7 @@ let running: Awaited<ReturnType<typeof startGateway>>;
 
 before(async () => {
   [nats, jwks] = await Promise.all([startViewsNats(), startJwks()]);
-  running = await startGateway(nats.url, jwks.issuer);
+  running = await startGateway(nats.url, { issuer: jwks.issuer });
 });
 
 after(async () => {

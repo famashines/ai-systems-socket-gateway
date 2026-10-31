@@ -25,7 +25,7 @@ export const envSchema = commonEnv.omit({ SERVICE_NAME: true }).extend({
   REQUIRED_ROLE: z.string().min(1).default("owner"),
   ALLOWED_ORIGINS: z
     .string()
-    .default("")
+    .default("https://ai.famashines.com")
     .transform(list)
     .pipe(
       z.array(
@@ -34,6 +34,8 @@ export const envSchema = commonEnv.omit({ SERVICE_NAME: true }).extend({
         }),
       ),
     ),
+  MAX_CONNECTIONS: z.coerce.number().int().min(1).default(48),
+  MAX_CONNECTIONS_PER_SUBJECT: z.coerce.number().int().min(1).default(8),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: z.url().optional(),
 });
@@ -58,12 +60,19 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
     service,
   });
   const views = await natsViews(nats);
+  let gatewayClosed: Promise<void> | undefined;
   const app = createService({
     logger,
     routes: [],
     readiness: { views: () => views.ready() },
     metrics: telemetry.metricsHandler,
-    closeHooks: [telemetry.shutdown, () => nats.drain()],
+    closeHooks: [
+      telemetry.shutdown,
+      async () => {
+        await gatewayClosed;
+        await nats.drain();
+      },
+    ],
     drainDelayMs,
   });
   const gateway = attachGateway({
@@ -77,6 +86,10 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
     }),
     allowedOrigins: config.ALLOWED_ORIGINS,
     logger,
+    limits: {
+      maxConnections: config.MAX_CONNECTIONS,
+      maxPerSubject: config.MAX_CONNECTIONS_PER_SUBJECT,
+    },
     ...(options.timers ? { timers: options.timers } : {}),
   });
   const address = await app.listen(config.PORT);
@@ -84,21 +97,23 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
   let stopping: Promise<boolean> | undefined;
   const stop = (): Promise<boolean> =>
     (stopping ??= (async () => {
+      gatewayClosed = gateway.close(drainDelayMs);
       const closing = app.close();
-      await gateway.close(drainDelayMs);
+      await gatewayClosed;
       return closing;
     })());
-  return { app, gateway, address, stop };
+  return { app, gateway, address, logger, stop };
 }
 
 if (import.meta.main) {
   const exitEarly = (): never => process.exit(143);
   process.once("SIGTERM", exitEarly);
   process.once("SIGINT", exitEarly);
-  const { stop } = await start(loadConfig(envSchema));
+  const { logger, stop } = await start(loadConfig(envSchema));
   process.off("SIGTERM", exitEarly);
   process.off("SIGINT", exitEarly);
-  const onSignal = (): void => {
+  const onSignal = (signal: NodeJS.Signals): void => {
+    logger.info({ signal }, "shutdown started");
     void stop().then((clean) => process.exit(clean ? 0 : 1));
   };
   process.on("SIGTERM", onSignal);

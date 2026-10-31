@@ -50,25 +50,39 @@ app                                   socket-gateway                       VIEWS
 
 ### Rules
 
-| Rule                                                                                               | Result                                                                          |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| No `hello` in 5 s, or another frame before it                                                      | close `4401`                                                                    |
-| Token not valid, wrong role, expired                                                               | close `4401`                                                                    |
-| JWKS cannot be read at `hello`                                                                     | close `1013` (try again later); the app does not sign out                       |
-| Token expiry (`exp`) with no `reauth` before it                                                    | close `4401`                                                                    |
-| `reauth` with a valid token for the same `sub`                                                     | the new `exp` is the limit                                                      |
-| `reauth` with another `sub` or a bad token                                                         | close `4401`                                                                    |
-| `reauth` while the JWKS cannot be read                                                             | `error { code: "unavailable" }`; the old token stays valid until its `exp`      |
-| A frame that is not valid JSON or not `ClientMessageV1` (strict), a binary frame, a second `hello` | close `4400`                                                                    |
-| A frame over 64 KiB                                                                                | close `1009` (the `ws` library, "message too big")                              |
-| More than 20 frames in one second                                                                  | close `4429`                                                                    |
-| No pong in 10 s after a protocol ping (each 20 s)                                                  | the socket is terminated (the client sees `1006`)                               |
-| App `ping { t }`                                                                                   | `pong { t }`                                                                    |
-| Send buffer over 1 MiB                                                                             | `delta` frames are dropped (counted)                                            |
-| Send buffer over 4 MiB                                                                             | close `4408`; the app resumes with `lastSeq`, so no notice is lost              |
-| `Origin` header not in `ALLOWED_ORIGINS`                                                           | 403 at the upgrade. No `Origin` (the native app) is allowed.                    |
-| SIGTERM                                                                                            | `/ready` 503, new upgrades 503; after the drain delay each socket closes `1012` |
-| A frame that fails while NATS is down                                                              | close `1013`; the app resumes                                                   |
+| Rule                                                                                                                    | Result                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No `hello` in 5 s, or another frame before it                                                                           | close `4401`                                                                                                                                                                                                                                        |
+| Token not valid, wrong role, expired                                                                                    | close `4401`                                                                                                                                                                                                                                        |
+| JWKS cannot be read at `hello`                                                                                          | close `1013` (try again later); the app does not sign out                                                                                                                                                                                           |
+| Token expiry (`exp`) with no `reauth` before it                                                                         | close `4401`                                                                                                                                                                                                                                        |
+| `reauth` with a valid token for the same `sub`                                                                          | the new `exp` is the limit                                                                                                                                                                                                                          |
+| `reauth` with another `sub` or a bad token                                                                              | close `4401`                                                                                                                                                                                                                                        |
+| `reauth` while the JWKS cannot be read                                                                                  | `error { code: "unavailable" }`; the old token stays valid until its `exp`                                                                                                                                                                          |
+| A frame that is not valid JSON or not `ClientMessageV1` (strict), a binary frame, a second `hello`                      | close `4400`                                                                                                                                                                                                                                        |
+| A frame over 64 KiB                                                                                                     | close `1009` (the `ws` library, "message too big")                                                                                                                                                                                                  |
+| More than 20 frames in one second                                                                                       | close `4429`                                                                                                                                                                                                                                        |
+| More than `MAX_CONNECTIONS_PER_SUBJECT` sockets for one `sub`                                                           | the new socket closes `4429` after its `hello`                                                                                                                                                                                                      |
+| No pong in 10 s after a protocol ping (each 20 s)                                                                       | the socket is terminated (the client sees `1006`)                                                                                                                                                                                                   |
+| App `ping { t }`                                                                                                        | `pong { t }`                                                                                                                                                                                                                                        |
+| Send buffer over 1 MiB                                                                                                  | `delta` frames are dropped (counted)                                                                                                                                                                                                                |
+| Send buffer over 4 MiB                                                                                                  | close `4408`; the app resumes with `lastSeq`, so no notice is lost                                                                                                                                                                                  |
+| The gateway closes a socket (`4401`, `4408`, `4429`, `1013` ...)                                                        | if the client does not answer the close in 1 s, the socket is terminated                                                                                                                                                                            |
+| `VIEWS` is deleted or made again while a socket is open (the consumer reports `consumer_deleted` or `stream_not_found`) | close `1012`; the resume then gives `resync { too_old }`                                                                                                                                                                                            |
+| An `Origin` header that is not in `ALLOWED_ORIGINS` (exact match)                                                       | 403 at the upgrade. A request with no `Origin` is allowed. React Native on Android sends `Origin: https://ai.famashines.com`, the default of `ALLOWED_ORIGINS`. Auth is the `hello` token, not a cookie, so the Origin check is a second line only. |
+| SIGTERM                                                                                                                 | `/ready` 503 and new upgrades 503 at once; after the drain delay each socket closes `1012`; NATS drains only after every session stopped its consumer                                                                                               |
+| NATS or the JWKS does not answer, the consumer fails, or the pod has `MAX_CONNECTIONS` sockets                          | close `1013` (try again later): the app reconnects with backoff and `lastSeq`                                                                                                                                                                       |
+
+### Close codes
+
+`4400`, `4401`, `4408`, `4429` and `1012` as in ARCHITECTURE 10.2, plus:
+
+- `1009`: a frame over 64 KiB (the `ws` library).
+- `1013` (try again later): NATS or the JWKS does not answer, the `VIEWS`
+  consumer failed, or the pod is full. The app reconnects with backoff and
+  `lastSeq`. Contracts `WsCloseCode` gets it in M2-02.
+- `1006` on the client: the gateway terminated the socket (no pong, or no
+  answer to a close in 1 s).
 
 ### Topics
 
@@ -88,8 +102,12 @@ M1 topics: `tasks`, `task:<id>`, `budget`, `agents`, `notifications` (the
 ### Sequences
 
 - `welcome.headSeq` is the last sequence of `VIEWS` at `hello`.
-- `hello.lastSeq` given: the first `subscribe` starts at `lastSeq + 1`, and
-  `fromSeq` is `lastSeq + 1`. If `lastSeq + 1` is below the first sequence
+- On the first connect the app omits `hello.lastSeq`. `lastSeq: 0` is valid
+  in contracts v0.2.0, but it replays the whole stream (contracts M2-02 makes
+  it positive).
+- `hello.lastSeq` given: each topic that is subscribed before the first
+  notice arrives starts at `lastSeq + 1`, also over several `subscribe`
+  frames, and `fromSeq` is `lastSeq + 1`. If `lastSeq + 1` is below the first sequence
   of `VIEWS` (older than the 7 days of the stream), or `lastSeq` is above
   the last sequence (the stream was made again), the gateway sends
   `resync { reason: "too_old" }` after `welcome` and continues as if no
@@ -97,7 +115,7 @@ M1 topics: `tasks`, `task:<id>`, `budget`, `agents`, `notifications` (the
 - No `lastSeq`: the first `subscribe` starts at the last sequence of `VIEWS`
   (read at that `subscribe`) plus 1. So a change between `subscribed` and the
   snapshot read is not lost, and the app drops a notice by its `rev`.
-- A new topic in a later `subscribe` starts at the last sequence at that
+- A new topic in a `subscribe` after the first notice starts at the last sequence at that
   `subscribe` plus 1. `fromSeq` is the lowest start of the topics in the
   frame.
 - A subscribe change stops the consumer and starts a new one at the last
@@ -126,45 +144,48 @@ have no `seq` and are best effort (ADR 0019).
 
 ## Configuration
 
-| Variable                                                            | Default                                         | Rule                                                                       |
-| ------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
-| `NATS_SERVERS`                                                      | none                                            | comma list                                                                 |
-| `NATS_USER`, `NATS_PASSWORD`                                        | none                                            | the user `ai-systems-socket-gateway`                                       |
-| `OIDC_ISSUER`                                                       | `https://auth.famashines.com/realms/ai-systems` | the JWKS is `<issuer>/protocol/openid-connect/certs`                       |
-| `OIDC_AUDIENCE`                                                     | `ai-systems-app`                                |                                                                            |
-| `REQUIRED_ROLE`                                                     | `owner`                                         |                                                                            |
-| `ALLOWED_ORIGINS`                                                   | empty                                           | comma list of origins (`scheme://host:port`). Keep it empty in production. |
-| `PORT`                                                              | `8080`                                          |                                                                            |
-| `LOG_LEVEL`                                                         | `info`                                          |                                                                            |
-| `RELEASE`                                                           | `local`                                         | the image sets it                                                          |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none                                            | traces go out only when one is set                                         |
+| Variable                                                            | Default                                         | Rule                                                                                                      |
+| ------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `NATS_SERVERS`                                                      | none                                            | comma list                                                                                                |
+| `NATS_USER`, `NATS_PASSWORD`                                        | none                                            | the user `ai-systems-socket-gateway`                                                                      |
+| `OIDC_ISSUER`                                                       | `https://auth.famashines.com/realms/ai-systems` | the JWKS is `<issuer>/protocol/openid-connect/certs`                                                      |
+| `OIDC_AUDIENCE`                                                     | `ai-systems-app`                                |                                                                                                           |
+| `REQUIRED_ROLE`                                                     | `owner`                                         |                                                                                                           |
+| `ALLOWED_ORIGINS`                                                   | `https://ai.famashines.com`                     | comma list of exact origins (`scheme://host:port`). An empty value allows only requests with no `Origin`. |
+| `MAX_CONNECTIONS`                                                   | `48`                                            | sockets for each pod; below the planned `max_consumers` 64 of `VIEWS`                                     |
+| `MAX_CONNECTIONS_PER_SUBJECT`                                       | `8`                                             | sockets for each `sub`                                                                                    |
+| `PORT`                                                              | `8080`                                          |                                                                                                           |
+| `LOG_LEVEL`                                                         | `info`                                          |                                                                                                           |
+| `RELEASE`                                                           | `local`                                         | the image sets it                                                                                         |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none                                            | traces go out only when one is set                                                                        |
 
 `.env.example` lists them with no values. The service has no database.
 
 ## Metrics
 
-| Metric                           | Labels   |
-| -------------------------------- | -------- |
-| `ws_connections` (gauge)         |          |
-| `ws_connections_opened_total`    |          |
-| `ws_connections_closed_total`    | `code`   |
-| `ws_upgrades_refused_total`      | `status` |
-| `ws_frames_received_total`       |          |
-| `ws_frames_sent_total`           | `type`   |
-| `ws_deltas_dropped_total`        |          |
-| `ws_view_messages_invalid_total` |          |
+| Metric                            | Labels   |
+| --------------------------------- | -------- |
+| `ws_connections` (gauge)          |          |
+| `ws_connections_opened_total`     |          |
+| `ws_connections_closed_total`     | `code`   |
+| `ws_upgrades_refused_total`       | `status` |
+| `ws_frames_received_total`        |          |
+| `ws_frames_sent_total`            | `type`   |
+| `ws_deltas_dropped_total`         |          |
+| `ws_view_messages_invalid_total`  |          |
+| `ws_consumer_stop_failures_total` |          |
 
 ## Known limits
 
 - One ordered consumer for each connection. ADR 0025 plans `max_consumers`
-  64 on `VIEWS`, so a pod then serves at most 64 connections at a time
-  (minus other readers of `VIEWS`). Enough for one owner with a few devices.
+  64 on `VIEWS`, so `MAX_CONNECTIONS` is 48 for each pod. Two pods can
+  together pass 64; then a consumer create fails and that socket closes
+  `1013`.
 - After a crash of the pod, its consumers are not deleted. NATS removes
   them after 5 minutes with no activity (`inactive_threshold` of the
   ordered consumer). Until then they count against that limit.
-- A slow consumer (`4408`) or a shutdown close waits for the close
-  handshake. `ws` terminates a slow consumer after 30 s; a shutdown
-  terminates the sockets that remain after 2 s.
+- A shutdown waits at most 1 s for the close handshakes, terminates the
+  rest, then waits at most 5 s for the sessions to stop their consumers.
 - The gateway connects to NATS with `@nats-io/transport-node` and the kit
   rules (name, inbox prefix `_INBOX_socket-gateway`, no reconnect limit,
   wait on the first connect). It does not use `kit/messaging`, because that

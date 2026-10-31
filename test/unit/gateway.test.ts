@@ -67,7 +67,7 @@ protocolCases("memory", () => {
   const { views, backend } = memoryViews();
   return Promise.resolve({
     ...backend,
-    async start({ issuer, timers, allowedOrigins = [] }) {
+    async start({ issuer, timers, limits, allowedOrigins = [] }) {
       const app = createService({ logger, routes: [], drainDelayMs: 0 });
       const gateway = attachGateway({
         server: app.server,
@@ -76,13 +76,16 @@ protocolCases("memory", () => {
         allowedOrigins,
         logger,
         ...(timers ? { timers } : {}),
+        ...(limits ? { limits } : {}),
       });
       const address = await app.listen(0, "127.0.0.1");
       return {
         url: `http://127.0.0.1:${String(address.port)}`,
+        connections: () => gateway.connections(),
         async stop() {
+          const closed = gateway.close();
           const closing = app.close();
-          await gateway.close();
+          await closed;
           return closing;
         },
       };

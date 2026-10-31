@@ -32,7 +32,7 @@ test
 ├── support.ts    local JWKS and token signer, WebSocket test client
 ├── nats.ts       NATS container with the gitops grants, VIEWS, publishers
 ├── unit          the suite on an in-memory VIEWS (no Docker)
-├── integration   the suite on NATS, and readiness and metrics
+├── integration   the suite on NATS; readiness, metrics, shutdown, VIEWS remake
 └── harness       dev page and Playwright test (not in the image)
 ```
 

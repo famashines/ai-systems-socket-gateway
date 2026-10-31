@@ -139,7 +139,11 @@ export async function connect(base: string, options: ConnectOptions = {}): Promi
     async close() {
       if (ws.readyState === WebSocket.CLOSED) return;
       ws.close();
+      const timer = setTimeout(() => {
+        ws.terminate();
+      }, 1000);
       await closed;
+      clearTimeout(timer);
     },
   };
 }

@@ -38,13 +38,21 @@ export async function natsViews(
         () => true,
         () => false,
       ),
-    async consume(subjects, startSeq, onMessage, onError) {
+    async consume(subjects, startSeq, onMessage, onError, onGone) {
       const consumer = await js.consumers.get(stream, {
         filter_subjects: subjects,
         opt_start_seq: startSeq,
       });
       const messages = await consumer.consume();
       const stopped = new AbortController();
+      void (async () => {
+        for await (const status of messages.status()) {
+          if (status.type === "consumer_deleted" || status.type === "stream_not_found") {
+            if (!stopped.signal.aborted) onGone();
+            return;
+          }
+        }
+      })();
       const done = (async () => {
         for await (const message of messages) {
           onMessage({ seq: message.seq, subject: message.subject, data: message.string() });
@@ -55,7 +63,7 @@ export async function natsViews(
         stopped.abort();
         await messages.close();
         await done;
-        await consumer.delete().catch(() => false);
+        await consumer.delete();
       };
     },
     deltas(taskId, onMessage) {

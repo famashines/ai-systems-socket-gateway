@@ -41,6 +41,7 @@ export interface Views {
     startSeq: number,
     onMessage: (message: ViewMessage) => void,
     onError: (error: unknown) => void,
+    onGone: () => void,
   ): Promise<() => Promise<void>>;
   deltas(taskId: string, onMessage: (subject: string, data: string) => void): () => void;
 }
@@ -50,6 +51,12 @@ export interface Timers {
   pingIntervalMs: number;
   pongTimeoutMs: number;
   closeGraceMs: number;
+  sessionsEndMs: number;
+}
+
+export interface Limits {
+  maxConnections: number;
+  maxPerSubject: number;
 }
 
 export interface GatewayOptions {
@@ -59,9 +66,11 @@ export interface GatewayOptions {
   allowedOrigins: readonly string[];
   logger: Logger;
   timers?: Partial<Timers>;
+  limits?: Partial<Limits>;
 }
 
 export interface Gateway {
+  connections(): number;
   close(drainDelayMs?: number): Promise<void>;
 }
 
@@ -80,9 +89,12 @@ export function attachGateway(options: GatewayOptions): Gateway {
     helloTimeoutMs: WsLimits.helloTimeoutMs,
     pingIntervalMs: WsLimits.pingIntervalMs,
     pongTimeoutMs: WsLimits.pongTimeoutMs,
-    closeGraceMs: 2000,
+    closeGraceMs: 1000,
+    sessionsEndMs: 5000,
     ...options.timers,
   };
+  const limits: Limits = { maxConnections: 48, maxPerSubject: 8, ...options.limits };
+  const perSubject = new Map<string, number>();
   const meter = metrics.getMeter("ai-systems-socket-gateway");
   const opened = meter.createCounter("ws_connections_opened", {
     description: "WebSocket connections that passed the upgrade",
@@ -104,6 +116,9 @@ export function attachGateway(options: GatewayOptions): Gateway {
   });
   const refused = meter.createCounter("ws_upgrades_refused", {
     description: "Upgrade requests refused, by HTTP status",
+  });
+  const stopFailures = meter.createCounter("ws_consumer_stop_failures", {
+    description: "VIEWS consumers that did not stop or were not deleted",
   });
   const live = meter.createObservableGauge("ws_connections", {
     description: "Open WebSocket connections",
@@ -152,6 +167,8 @@ export function attachGateway(options: GatewayOptions): Gateway {
     let closeCode: number | undefined;
     let expiry: NodeJS.Timeout | undefined;
     let pongTimer: NodeJS.Timeout | undefined;
+    let graceTimer: NodeJS.Timeout | undefined;
+    let counted = false;
 
     const send = (message: ServerMessageV1): void => {
       if (state === "closed") return;
@@ -166,6 +183,18 @@ export function attachGateway(options: GatewayOptions): Gateway {
       state = "closed";
       closeCode = code;
       ws.close(code, reason);
+      graceTimer = setTimeout(() => {
+        ws.terminate();
+      }, timers.closeGraceMs);
+    };
+
+    const stopQuietly = async (stop: (() => Promise<void>) | undefined): Promise<void> => {
+      try {
+        await stop?.();
+      } catch (error) {
+        stopFailures.add(1);
+        log.error({ err: error }, "the VIEWS consumer did not stop cleanly");
+      }
     };
 
     const helloTimer = setTimeout(() => {
@@ -182,6 +211,8 @@ export function attachGateway(options: GatewayOptions): Gateway {
       }, timers.pongTimeoutMs);
       ws.ping();
     }, timers.pingIntervalMs);
+
+    if (wss.clients.size > limits.maxConnections) end(unavailable, "too many connections");
 
     ws.on("pong", () => {
       clearTimeout(pongTimer);
@@ -201,7 +232,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
     const restart = async (): Promise<void> => {
       const stop = stopConsumer;
       stopConsumer = undefined;
-      await stop?.();
+      await stopQuietly(stop);
       if (!subs || state === "closed") return;
       const topics = subs.topics();
       if (topics.length === 0) return;
@@ -215,6 +246,10 @@ export function attachGateway(options: GatewayOptions): Gateway {
         (error: unknown) => {
           log.error({ err: error }, "the VIEWS consumer failed");
           end(unavailable, "consumer failed");
+        },
+        () => {
+          log.warn("the VIEWS stream or the consumer is gone");
+          end(WsCloseCode.serverRestart, "stream changed");
         },
       );
     };
@@ -264,6 +299,13 @@ export function attachGateway(options: GatewayOptions): Gateway {
       }
       const head = await views.head();
       if (state === "closed") return;
+      const count = perSubject.get(subject.sub) ?? 0;
+      if (count >= limits.maxPerSubject) {
+        end(WsCloseCode.rateLimit, "too many connections");
+        return;
+      }
+      perSubject.set(subject.sub, count + 1);
+      counted = true;
       sub = subject.sub;
       state = "open";
       watchExpiry(subject.exp);
@@ -352,38 +394,41 @@ export function attachGateway(options: GatewayOptions): Gateway {
         clearTimeout(helloTimer);
         clearTimeout(expiry);
         clearTimeout(pongTimer);
+        clearTimeout(graceTimer);
         clearInterval(heartbeat);
+        if (counted) {
+          const left = (perSubject.get(sub) ?? 1) - 1;
+          if (left > 0) perSubject.set(sub, left);
+          else perSubject.delete(sub);
+        }
         closed.add(1, { code: closeCode ?? code });
         for (const stop of deltaSubs.values()) stop();
         deltaSubs.clear();
-        void queue
-          .then(async () => {
-            await stopConsumer?.();
-          })
-          .catch((error: unknown) => {
-            log.warn({ err: error }, "the VIEWS consumer did not stop cleanly");
-          })
-          .finally(resolve);
+        void queue.then(() => stopQuietly(stopConsumer)).finally(resolve);
       });
     });
   }
 
+  const within = async (promise: Promise<unknown>, ms: number): Promise<boolean> => {
+    const timer = new AbortController();
+    const expired = sleep(ms, false, { signal: timer.signal }).catch(() => false);
+    const result = await Promise.race([promise.then(() => true), expired]);
+    timer.abort();
+    return result;
+  };
+
   return {
+    connections: () => wss.clients.size,
     async close(drainDelayMs = 0) {
       stopping = true;
       await sleep(drainDelayMs);
       for (const ws of wss.clients) ws.close(WsCloseCode.serverRestart, "server restart");
       const all = Promise.all(sessions);
-      const timer = new AbortController();
-      const grace = sleep(timers.closeGraceMs, undefined, { signal: timer.signal }).then(
-        () => {
-          for (const ws of wss.clients) ws.terminate();
-        },
-        () => undefined,
-      );
-      await Promise.race([all, grace]);
-      timer.abort();
-      await all;
+      if (await within(all, timers.closeGraceMs)) return;
+      for (const ws of wss.clients) ws.terminate();
+      if (!(await within(all, timers.sessionsEndMs))) {
+        logger.error({ sessions: sessions.size }, "sessions did not end in time");
+      }
     },
   };
 }

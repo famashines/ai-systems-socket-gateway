@@ -75,6 +75,7 @@ export interface ViewsNats {
   head(): Promise<StreamHead>;
   trimBefore(seq: number): Promise<void>;
   consumers(): Promise<number>;
+  remake(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -101,6 +102,10 @@ export async function startViewsNats(): Promise<ViewsNats> {
     },
     async trimBefore(seq) {
       await manager.streams.purge("VIEWS", { seq });
+    },
+    async remake() {
+      await manager.streams.delete("VIEWS");
+      await createStreams(admin, [viewsStream]);
     },
     consumers: async () => (await manager.streams.info("VIEWS")).state.consumer_count,
     async close() {
