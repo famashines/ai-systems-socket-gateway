@@ -204,10 +204,10 @@ repo. A manual run (`workflow_dispatch`) works only on `main`.
   ordered consumer). Until then they count against that limit.
 - A shutdown waits at most 1 s for the close handshakes, terminates the
   rest, then waits at most 5 s for the sessions to stop their consumers.
-- The gateway connects to NATS with `@nats-io/transport-node` and the kit
-  rules (name, inbox prefix `_INBOX_socket-gateway`, no reconnect limit,
-  wait on the first connect). It does not use `kit/messaging`, because that
-  export loads `mongodb`, and a gateway does not install it.
+- The gateway connects to NATS with `kit/nats` (name, inbox prefix
+  `_INBOX_socket-gateway`, no reconnect limit, wait on the first connect).
+  It does not use `kit/messaging`, because that export loads `mongodb`,
+  and a gateway does not install it.
 
 ## Commands and tests
 

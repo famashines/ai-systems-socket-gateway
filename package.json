@@ -20,9 +20,7 @@
   },
   "dependencies": {
     "@famashines/ai-systems-contracts": "github:famashines/ai-systems-contracts#v0.2.0",
-    "@famashines/ai-systems-kit": "github:famashines/ai-systems-kit#v0.2.0",
-    "@nats-io/jetstream": "3.4.0",
-    "@nats-io/transport-node": "3.4.0",
+    "@famashines/ai-systems-kit": "github:famashines/ai-systems-kit#f46e90b081a9a26f0a2c0f0a2b2740087138106e",
     "@opentelemetry/api": "1.10.0",
     "ws": "8.22.1",
     "zod": "4.6.7"
@@ -40,7 +38,7 @@
     "typescript-eslint": "8.72.1"
   },
   "allowScripts": {
-    "github:famashines/ai-systems-kit#8b4a4a44320d94c234adae418c1d7e4a4e76277a": true,
+    "github:famashines/ai-systems-kit#f46e90b081a9a26f0a2c0f0a2b2740087138106e": true,
     "github:famashines/ai-systems-contracts#c13b03bf06f447369e18896f392e7cf66ae764e9": true,
     "protobufjs": false,
     "ssh2": false,

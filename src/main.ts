@@ -1,10 +1,11 @@
 import { createJwtVerifier, type JwtVerifierOptions } from "@famashines/ai-systems-kit/auth";
 import { commonEnv, loadConfig } from "@famashines/ai-systems-kit/config";
 import { createService } from "@famashines/ai-systems-kit/http";
+import { connectNats } from "@famashines/ai-systems-kit/nats";
 import { createLogger, startTelemetry } from "@famashines/ai-systems-kit/observability";
 import { z } from "zod";
 import { attachGateway, type Timers } from "./gateway.ts";
-import { connectNats, natsViews } from "./views.io.ts";
+import { natsViews } from "./views.io.ts";
 
 export const service = "socket-gateway";
 
@@ -79,7 +80,7 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
       telemetry.shutdown,
       async () => {
         await gatewayClosed;
-        await nats.drain();
+        await nats.close();
       },
     ],
     drainDelayMs,

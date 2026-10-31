@@ -1,8 +1,6 @@
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
-import type { NatsConnection } from "@nats-io/transport-node";
+import { connectNats, type Nats } from "@famashines/ai-systems-kit/nats";
 import { createStreams, startNats } from "@famashines/ai-systems-kit/testing";
 import type { StreamHead } from "../src/protocol.ts";
-import { connectNats } from "../src/views.io.ts";
 
 export const socketGatewayGrants = [
   "$JS.API.INFO",
@@ -66,7 +64,20 @@ export const viewsStream = {
   subjects: ["view.>"],
   max_bytes: 268435456,
   max_age: 604800000000000,
+  max_consumers: 64,
 };
+
+interface StreamInfo {
+  state: { first_seq: number; last_seq: number; consumer_count: number };
+}
+
+async function api<T>(nats: Nats, subject: string, data = ""): Promise<T> {
+  const answer = (await nats.connection.request(subject, data)).json<
+    T & { error?: { description: string } }
+  >();
+  if (answer.error) throw new Error(`${subject}: ${answer.error.description}`);
+  return answer;
+}
 
 export interface ViewsNats {
   url: string;
@@ -81,33 +92,32 @@ export interface ViewsNats {
 
 export async function startViewsNats(): Promise<ViewsNats> {
   const container = await startNats({ config: natsConfig });
-  const login = (user: string, pass: string, service: string): Promise<NatsConnection> =>
+  const login = (user: string, pass: string, service: string): Promise<Nats> =>
     connectNats({ servers: [container.url], user, pass, service });
   const admin = await login("ai-systems-admin", "admin", "admin");
   const projections = await login("ai-systems-projections", "projections", "projections");
   const aiProxy = await login("ai-systems-ai-proxy", "ai-proxy", "ai-proxy");
-  await createStreams(admin, [viewsStream]);
-  const manager = await jetstreamManager(admin);
-  const js = jetstream(projections);
+  await createStreams(admin.connection, [viewsStream]);
+  const info = () => api<StreamInfo>(admin, "$JS.API.STREAM.INFO.VIEWS");
   return {
     url: container.url,
-    publish: async (subject, data) => (await js.publish(subject, data)).seq,
+    publish: async (subject, data) => (await api<{ seq: number }>(projections, subject, data)).seq,
     async publishDelta(subject, data) {
-      aiProxy.publish(subject, data);
-      await aiProxy.flush();
+      aiProxy.connection.publish(subject, data);
+      await aiProxy.connection.flush();
     },
     async head() {
-      const { state } = await manager.streams.info("VIEWS");
+      const { state } = await info();
       return { first: state.first_seq, last: state.last_seq };
     },
     async trimBefore(seq) {
-      await manager.streams.purge("VIEWS", { seq });
+      await api(admin, "$JS.API.STREAM.PURGE.VIEWS", JSON.stringify({ seq }));
     },
     async remake() {
-      await manager.streams.delete("VIEWS");
-      await createStreams(admin, [viewsStream]);
+      await api(admin, "$JS.API.STREAM.DELETE.VIEWS");
+      await createStreams(admin.connection, [viewsStream]);
     },
-    consumers: async () => (await manager.streams.info("VIEWS")).state.consumer_count,
+    consumers: async () => (await info()).state.consumer_count,
     async close() {
       await Promise.all([admin.close(), projections.close(), aiProxy.close()]);
       await container.stop();
