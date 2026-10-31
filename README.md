@@ -102,6 +102,9 @@ Topics: `tasks`, `task:<id>`, `conversation:<id>`, `budget`, `agents`,
   consumer runs with the new filter, so no notice of a removed topic comes
   after it. A delta that was already on its way can still come (deltas are
   best effort, ADR 0019).
+
+### Sequences
+
 - `welcome.headSeq` is the last sequence of `VIEWS` at `hello`.
 - On the first connect the app omits `hello.lastSeq`. `lastSeq: 0` is valid
   in contracts v0.3.0, but it replays the whole stream.
