@@ -185,24 +185,46 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     );
   });
 
-  test(`${name}: resume covers each topic subscribed before the first notice`, async () => {
+  test(`${name}: all topics in the first subscribe resume exactly`, async () => {
     const task = taskTopic();
     const first = await ready();
     await subscribed(first.c, ["tasks", task]);
     const seen = await notice(task);
     await first.c.next("notice");
     await first.c.close();
-    const missed = [await notice(task), await notice(task)];
+    const missed = [await notice("tasks"), await notice(task), await notice("tasks")];
     const second = await ready(seen);
-    assert.equal((await subscribed(second.c, ["tasks"])).fromSeq, seen + 1);
-    assert.equal((await subscribed(second.c, [task])).fromSeq, seen + 1);
-    await waitFor(() => second.c.notices().length >= 2, 5000, 10);
+    assert.equal((await subscribed(second.c, ["tasks", task])).fromSeq, seen + 1);
     const live = await notice(task);
-    await waitFor(() => second.c.notices().length >= 3, 5000, 10);
+    await waitFor(() => second.c.notices().length >= 4, 5000, 10);
     await sleep(100);
     assert.deepEqual(
       second.c.notices().map((n) => n.seq),
       [...missed, live],
+    );
+  });
+
+  test(`${name}: a topic added after the first subscribe starts at the head`, async () => {
+    const task = taskTopic();
+    const first = await ready();
+    await subscribed(first.c, ["tasks"]);
+    const seen = await notice("tasks");
+    await first.c.next("notice");
+    await first.c.close();
+    await notice(task);
+    await notice("tasks");
+    const second = await ready(seen);
+    assert.equal((await subscribed(second.c, ["tasks"])).fromSeq, seen + 1);
+    const head = await backend.head();
+    assert.equal((await subscribed(second.c, [task])).fromSeq, head.last + 1);
+    const live = await notice(task);
+    await waitFor(() => second.c.notices().some((n) => n.seq === live), 5000, 10);
+    assert.deepEqual(
+      second.c
+        .notices()
+        .filter((n) => n.topic === task)
+        .map((n) => n.seq),
+      [live],
     );
   });
 
@@ -436,13 +458,22 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     await other.next("welcome");
   });
 
-  test(`${name}: more than maxConnections sockets close the new one with 1013`, async () => {
-    const running = await gateway({ limits: { maxConnections: 2 } });
-    await ready(undefined, running);
-    await client({}, running);
-    const third = await client({}, running);
-    assert.equal((await third.closed).code, 1013);
-    await waitFor(() => running.connections() === 2, 2000, 20);
+  test(`${name}: sockets with no hello do not count against maxConnections`, async () => {
+    const running = await gateway({
+      timers: { helloTimeoutMs: 500 },
+      limits: { maxConnections: 1, maxPendingHello: 16 },
+    });
+    const anonymous = await Promise.all(Array.from({ length: 15 }, () => client({}, running)));
+    const owner = await client({}, running);
+    await assert.rejects(connect(running.url), /503/);
+    owner.send({ type: "hello", v: 1, token: await jwks.token() });
+    await owner.next("welcome");
+    const second = await client({}, running);
+    second.send({ type: "hello", v: 1, token: await jwks.token() });
+    assert.equal((await second.closed).code, 1013);
+    for (const c of anonymous) assert.equal((await c.closed).code, 4401);
+    const later = await client({}, running);
+    assert.equal(later.ws.readyState, later.ws.OPEN);
   });
 
   test(`${name}: an Origin that is not allowed gets 403, other paths 404`, async () => {

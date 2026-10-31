@@ -11,6 +11,7 @@ test("defaults allow the app origin and cap the connections", () => {
   assert.deepEqual(config.ALLOWED_ORIGINS, ["https://ai.famashines.com"]);
   assert.equal(config.MAX_CONNECTIONS, 48);
   assert.equal(config.MAX_CONNECTIONS_PER_SUBJECT, 8);
+  assert.equal(config.MAX_PENDING_HELLO, 16);
   assert.equal(config.OIDC_AUDIENCE, "ai-systems-app");
 });
 

@@ -14,6 +14,9 @@ export async function startGateway(natsUrl: string, options: StartOptions) {
     ...(limits.maxConnections === undefined
       ? {}
       : { MAX_CONNECTIONS: String(limits.maxConnections) }),
+    ...(limits.maxPendingHello === undefined
+      ? {}
+      : { MAX_PENDING_HELLO: String(limits.maxPendingHello) }),
     ...(limits.maxPerSubject === undefined
       ? {}
       : { MAX_CONNECTIONS_PER_SUBJECT: String(limits.maxPerSubject) }),

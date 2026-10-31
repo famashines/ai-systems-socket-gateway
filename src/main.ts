@@ -36,6 +36,7 @@ export const envSchema = commonEnv.omit({ SERVICE_NAME: true }).extend({
     ),
   MAX_CONNECTIONS: z.coerce.number().int().min(1).default(48),
   MAX_CONNECTIONS_PER_SUBJECT: z.coerce.number().int().min(1).default(8),
+  MAX_PENDING_HELLO: z.coerce.number().int().min(1).default(16),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: z.url().optional(),
 });
@@ -89,6 +90,7 @@ export async function start(config: Readonly<Config>, options: StartOptions = {}
     limits: {
       maxConnections: config.MAX_CONNECTIONS,
       maxPerSubject: config.MAX_CONNECTIONS_PER_SUBJECT,
+      maxPendingHello: config.MAX_PENDING_HELLO,
     },
     ...(options.timers ? { timers: options.timers } : {}),
   });

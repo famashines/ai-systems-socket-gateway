@@ -101,6 +101,7 @@ export function subscriptions(resumeAfter?: number, maxTopics: number = WsLimits
       const added = [...new Set(topics)].filter((topic) => !floors.has(topic));
       if (floors.size + added.length > maxTopics) return undefined;
       const base = resume ?? last;
+      resume = undefined;
       if (floors.size === 0) cursor = base;
       for (const topic of added) floors.set(topic, base);
       const fromSeq = Math.min(
@@ -114,7 +115,6 @@ export function subscriptions(resumeAfter?: number, maxTopics: number = WsLimits
     accept(seq: number, topic: Topic | undefined): boolean {
       if (seq <= cursor) return false;
       cursor = seq;
-      resume = undefined;
       if (topic === undefined) return false;
       const floor = floors.get(topic);
       return floor !== undefined && seq > floor;

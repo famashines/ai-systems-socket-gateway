@@ -56,6 +56,7 @@ export interface Timers {
 
 export interface Limits {
   maxConnections: number;
+  maxPendingHello: number;
   maxPerSubject: number;
 }
 
@@ -93,7 +94,14 @@ export function attachGateway(options: GatewayOptions): Gateway {
     sessionsEndMs: 5000,
     ...options.timers,
   };
-  const limits: Limits = { maxConnections: 48, maxPerSubject: 8, ...options.limits };
+  const limits: Limits = {
+    maxConnections: 48,
+    maxPerSubject: 8,
+    maxPendingHello: 16,
+    ...options.limits,
+  };
+  let pending = 0;
+  let authenticated = 0;
   const perSubject = new Map<string, number>();
   const meter = metrics.getMeter("ai-systems-socket-gateway");
   const opened = meter.createCounter("ws_connections_opened", {
@@ -140,7 +148,9 @@ export function attachGateway(options: GatewayOptions): Gateway {
           ? 503
           : origin !== undefined && !allowedOrigins.includes(origin)
             ? 403
-            : undefined;
+            : pending >= limits.maxPendingHello
+              ? 503
+              : undefined;
     if (status !== undefined) {
       refused.add(1, { status });
       refuse(socket, status);
@@ -169,6 +179,13 @@ export function attachGateway(options: GatewayOptions): Gateway {
     let pongTimer: NodeJS.Timeout | undefined;
     let graceTimer: NodeJS.Timeout | undefined;
     let counted = false;
+    let waiting = true;
+    pending += 1;
+    const leaveHello = (): void => {
+      if (!waiting) return;
+      waiting = false;
+      pending -= 1;
+    };
 
     const send = (message: ServerMessageV1): void => {
       if (state === "closed") return;
@@ -211,8 +228,6 @@ export function attachGateway(options: GatewayOptions): Gateway {
       }, timers.pongTimeoutMs);
       ws.ping();
     }, timers.pingIntervalMs);
-
-    if (wss.clients.size > limits.maxConnections) end(unavailable, "too many connections");
 
     ws.on("pong", () => {
       clearTimeout(pongTimer);
@@ -299,12 +314,18 @@ export function attachGateway(options: GatewayOptions): Gateway {
       }
       const head = await views.head();
       if (state === "closed") return;
+      leaveHello();
+      if (authenticated >= limits.maxConnections) {
+        end(unavailable, "too many connections");
+        return;
+      }
       const count = perSubject.get(subject.sub) ?? 0;
       if (count >= limits.maxPerSubject) {
         end(WsCloseCode.rateLimit, "too many connections");
         return;
       }
       perSubject.set(subject.sub, count + 1);
+      authenticated += 1;
       counted = true;
       sub = subject.sub;
       state = "open";
@@ -396,7 +417,9 @@ export function attachGateway(options: GatewayOptions): Gateway {
         clearTimeout(pongTimer);
         clearTimeout(graceTimer);
         clearInterval(heartbeat);
+        leaveHello();
         if (counted) {
+          authenticated -= 1;
           const left = (perSubject.get(sub) ?? 1) - 1;
           if (left > 0) perSubject.set(sub, left);
           else perSubject.delete(sub);
