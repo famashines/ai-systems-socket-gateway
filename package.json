@@ -19,7 +19,7 @@
     "test:harness": "playwright test --config test/harness/playwright.config.ts"
   },
   "dependencies": {
-    "@famashines/ai-systems-contracts": "github:famashines/ai-systems-contracts#v0.2.0",
+    "@famashines/ai-systems-contracts": "github:famashines/ai-systems-contracts#v0.3.0",
     "@famashines/ai-systems-kit": "github:famashines/ai-systems-kit#v0.3.0",
     "@opentelemetry/api": "1.10.0",
     "ws": "8.22.1",
@@ -39,7 +39,7 @@
   },
   "allowScripts": {
     "github:famashines/ai-systems-kit#7d9c7b83ae2fdf012ba02611518252df309bad64": true,
-    "github:famashines/ai-systems-contracts#c13b03bf06f447369e18896f392e7cf66ae764e9": true,
+    "github:famashines/ai-systems-contracts#9ffcdd3175a8b7119682e0826fdf4438de085fd2": true,
     "protobufjs": false,
     "ssh2": false,
     "cpu-features": false

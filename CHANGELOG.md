@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Contracts v0.3.0: the `conversation:<id>` topic, `delta` with `attempt`
+  (a delta body with no `attempt` is dropped).
+- `unsubscribe` gives `unsubscribed { topics }` after the consumer changed.
+- Harness: a chat client on the page (owner message, `task:<id>`
+  subscribe, deltas with a restart on a new attempt, final text) and its
+  test.
+
 - NATS from `kit/nats` (kit 0.3.0): connect, the `VIEWS` ordered
   consumers and the `ws_connections` gauge. No direct `@nats-io/*`
   dependency. The test `VIEWS` stream has `max_consumers` 64, as in gitops.

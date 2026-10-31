@@ -370,6 +370,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
       const removed = current.remove(topics);
       watchDeltas(removed, false);
       if (removed.length > 0) await restart();
+      send({ type: "unsubscribed", topics });
     };
 
     const handle = async (frame: ClientMessageV1): Promise<void> => {

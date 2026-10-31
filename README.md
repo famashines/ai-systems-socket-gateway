@@ -32,7 +32,7 @@ and 12; ADR 0004, 0009, 0010, 0019, 0021, 0023 and 0025).
 ## Protocol
 
 JSON text frames, checked with `ClientMessageV1` and `ServerMessageV1` of
-`@famashines/ai-systems-contracts` v0.2.0. The message list is in
+`@famashines/ai-systems-contracts` v0.3.0. The message list is in
 `ARCHITECTURE.md` 10.1.
 
 ```
@@ -81,31 +81,33 @@ app                                   socket-gateway                       VIEWS
 - `1009`: a frame over 64 KiB (the `ws` library).
 - `1013` (try again later): NATS or the JWKS does not answer, the `VIEWS`
   consumer failed, or the pod has `MAX_CONNECTIONS` authenticated sessions. The app reconnects with backoff and
-  `lastSeq`. Contracts `WsCloseCode` gets it in M2-02.
+  `lastSeq`. Contracts v0.3.0 `WsCloseCode` does not list it.
 - `1006` on the client: the gateway terminated the socket (no pong, or no
   answer to a close in 1 s).
 
 ### Topics
 
-M1 topics: `tasks`, `task:<id>`, `budget`, `agents`, `notifications` (the
-`Topic` schema of contracts v0.2.0).
+Topics: `tasks`, `task:<id>`, `conversation:<id>`, `budget`, `agents`,
+`notifications` (the `Topic` schema of contracts v0.3.0).
 
-- An unknown topic (also `conversation:<id>` before contracts has it) fails
-  the strict `ClientMessageV1` schema, so it closes `4400`. The app and the
-  gateway use the same contracts version.
+- An unknown topic (also `conversation:x` with an id that is not a UUID)
+  fails the strict `ClientMessageV1` schema, so it closes `4400`. The app
+  and the gateway use the same contracts version.
 - More than 50 topics in one frame fails the schema (`4400`). More than 50
   topics in total over several frames gives
   `error { code: "validation_failed" }`, no change and no close.
 - No topic is forbidden in M1 (one owner), so `4403` is not used yet.
-- `unsubscribe` has no answer: contracts has no `unsubscribed` message, and
-  `subscribed.topics` must have at least one topic.
+- `unsubscribe` gives `unsubscribed { topics }` with the topics of the
+  request, also the topics that were not subscribed. It comes after the
+  consumer runs with the new filter, so no notice of a removed topic comes
+  after it. A delta that was already on its way can still come (deltas are
+  best effort, ADR 0019).
 
 ### Sequences
 
 - `welcome.headSeq` is the last sequence of `VIEWS` at `hello`.
 - On the first connect the app omits `hello.lastSeq`. `lastSeq: 0` is valid
-  in contracts v0.2.0, but it replays the whole stream (contracts M2-02 makes
-  it positive).
+  in contracts v0.3.0, but it replays the whole stream.
 - `hello.lastSeq` given: only the first `subscribe` resumes. Its topics
   start at `lastSeq + 1`, and `fromSeq` is `lastSeq + 1`. If `lastSeq + 1` is below the first sequence
   of `VIEWS` (older than the 7 days of the stream), or `lastSeq` is above
@@ -139,11 +141,34 @@ for each pod with fan-out in the process is not necessary for one owner.
 ### Deltas
 
 For each `task:<id>` topic the gateway subscribes core NATS
-`delta.<id>.*`. Contracts v0.2.0 has no delta message for NATS yet (task
-M2-02). The gateway takes `taskId` and `callId` from the subject and reads
-the body as JSON `{ "i": <int>, "text": "<string>" }`, then checks the
-frame with `ServerMessageV1`. A body that does not fit is dropped. Deltas
-have no `seq` and are best effort (ADR 0019).
+`delta.<id>.*` (ai-proxy publishes on `delta.<taskId>.<callId>`). It takes
+`taskId` and `callId` from the subject and reads the body as `DeltaV1`
+JSON `{ "attempt": <int from 1>, "i": <int>, "text": "<string>" }`, then
+checks the frame with `ServerMessageV1`. A body that does not fit (also
+one with no `attempt`) is dropped. Deltas have no `seq` and are best
+effort (ADR 0019).
+
+```
+app                          socket-gateway                 NATS
+ | subscribe conversation:<c> -> |  ordered consumer view.conversation.<c>
+ | <- notice owner message { taskId }                 <---- projections
+ | subscribe task:<t> -------->  |  core subscribe delta.<t>.*
+ | <- delta { attempt, i, text }                      <---- ai-proxy
+ | <- notice agent message { text: final }            <---- projections
+```
+
+The app learns the `taskId` of a running task from the `conversation:<id>`
+messages (an owner message has its `taskId` when orchestration made the
+task) and subscribes `task:<taskId>` for the live text (ARCHITECTURE 10.1).
+Client rule (contracts): when `attempt` grows, drop the text of the earlier
+attempt and start again at `i = 0`. The agent message of the thread has
+the final text, which replaces the streamed text. The harness page does
+this, and its test shows the deltas, a restart on a new attempt, and the
+final text.
+
+Decision: the gateway does not find the running task of a conversation by
+itself. It keeps no state, and a task that started before the subscribe
+gives no notice to read. The app subscribes the task topic.
 
 ## Configuration
 
