@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>socket-gateway harness</title>
+    <style>
+      body {
+        font:
+          14px/1.4 system-ui,
+          sans-serif;
+        margin: 24px;
+        color: #1c1917;
+      }
+      h1 {
+        font-size: 18px;
+      }
+      #status {
+        font-weight: 600;
+      }
+      #log {
+        font:
+          12px/1.5 ui-monospace,
+          monospace;
+        padding-left: 24px;
+      }
+      #log li.out {
+        color: #57534e;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>socket-gateway WebSocket harness (dev only)</h1>
+    <p>Status: <span id="status">idle</span></p>
+    <ol id="log"></ol>
+    <script>
+      const status = document.getElementById("status");
+      const log = document.getElementById("log");
+      const line = (text, kind) => {
+        const item = document.createElement("li");
+        item.textContent = text;
+        item.className = kind;
+        log.append(item);
+      };
+      window.harness = {
+        frames: [],
+        closed: null,
+        socket: null,
+        connect(url) {
+          this.frames = [];
+          this.closed = null;
+          return new Promise((resolve) => {
+            const socket = new WebSocket(url);
+            this.socket = socket;
+            status.textContent = "connecting";
+            socket.onopen = () => {
+              status.textContent = "open";
+              resolve(true);
+            };
+            socket.onmessage = (event) => {
+              this.frames.push(JSON.parse(event.data));
+              line(`in  ${event.data}`, "in");
+            };
+            socket.onclose = (event) => {
+              this.closed = { code: event.code, reason: event.reason };
+              status.textContent = `closed ${event.code} ${event.reason}`;
+              line(`close ${event.code} ${event.reason}`, "in");
+              resolve(false);
+            };
+          });
+        },
+        send(message) {
+          const text = JSON.stringify(message);
+          line(`out ${text.replace(/"token":"[^"]*"/, '"token":"<redacted>"')}`, "out");
+          this.socket.send(text);
+        },
+        close() {
+          this.socket.close(1000);
+        },
+      };
+    </script>
+  </body>
+</html>
