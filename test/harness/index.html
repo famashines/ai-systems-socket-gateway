@@ -26,15 +26,79 @@
       #log li.out {
         color: #57534e;
       }
+      #chat li {
+        margin: 4px 0;
+      }
+      #chat li.final {
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
     <h1>socket-gateway WebSocket harness (dev only)</h1>
     <p>Status: <span id="status">idle</span></p>
+    <h2>Chat</h2>
+    <ul id="chat"></ul>
+    <h2>Frames</h2>
     <ol id="log"></ol>
     <script>
       const status = document.getElementById("status");
       const log = document.getElementById("log");
+      const chatList = document.getElementById("chat");
+      const chat = { messages: new Map(), tasks: new Map(), watched: new Set() };
+      const taskOf = (taskId) => {
+        if (!chat.tasks.has(taskId)) chat.tasks.set(taskId, { attempt: 0, parts: [], final: null });
+        return chat.tasks.get(taskId);
+      };
+      const render = () => {
+        chatList.replaceChildren();
+        const ordered = [...chat.messages.values()].sort((a, b) =>
+          a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? -1 : 1,
+        );
+        for (const message of ordered) {
+          const item = document.createElement("li");
+          item.textContent = `${message.role}: ${message.text}`;
+          item.className = message.role;
+          chatList.append(item);
+        }
+        for (const [taskId, task] of chat.tasks) {
+          const item = document.createElement("li");
+          item.dataset.taskId = taskId;
+          item.className = task.final === null ? "live" : "final";
+          item.textContent =
+            task.final === null
+              ? `agent (attempt ${task.attempt}, live): ${task.parts.join("")}`
+              : `agent (final): ${task.final}`;
+          chatList.append(item);
+        }
+      };
+      const onFrame = (frame) => {
+        if (frame.type === "notice" && frame.topic.startsWith("conversation:")) {
+          const message = frame.data;
+          const known = chat.messages.get(message.messageId);
+          if (known && known.rev >= frame.rev) return;
+          if (message.role === "owner") {
+            chat.messages.set(message.messageId, message);
+            if (message.taskId && !chat.watched.has(message.taskId)) {
+              chat.watched.add(message.taskId);
+              window.harness.send({ type: "subscribe", topics: [`task:${message.taskId}`] });
+            }
+          } else {
+            taskOf(message.taskId).final = message.text;
+          }
+          render();
+        }
+        if (frame.type === "delta") {
+          const task = taskOf(frame.taskId);
+          if (task.final !== null || frame.attempt < task.attempt) return;
+          if (frame.attempt > task.attempt) {
+            task.attempt = frame.attempt;
+            task.parts = [];
+          }
+          task.parts[frame.i] = frame.text;
+          render();
+        }
+      };
       const line = (text, kind) => {
         const item = document.createElement("li");
         item.textContent = text;
@@ -57,8 +121,10 @@
               resolve(true);
             };
             socket.onmessage = (event) => {
-              this.frames.push(JSON.parse(event.data));
+              const frame = JSON.parse(event.data);
+              this.frames.push(frame);
               line(`in  ${event.data}`, "in");
+              onFrame(frame);
             };
             socket.onclose = (event) => {
               this.closed = { code: event.code, reason: event.reason };

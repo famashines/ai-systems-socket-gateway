@@ -191,3 +191,74 @@ test("a lastSeq older than the stream gives resync too_old", async ({ page }) =>
   expect((await all(page, "resync"))[0]?.reason).toBe("too_old");
   await page.screenshot({ path: test.info().outputPath("resync.png") });
 });
+
+test("a chat: the owner message gives the task, its deltas stream, a new attempt restarts, the final text replaces them", async ({
+  page,
+}) => {
+  await open(page);
+  await hello(page);
+  const conversationId = randomUUID();
+  const taskId = randomUUID();
+  const callId = randomUUID();
+  const topic = `conversation:${conversationId}` as const;
+  await send(page, { type: "subscribe", topics: [topic] });
+  await all(page, "subscribed");
+  const subject = `view.conversation.${conversationId}`;
+  const createdAt = new Date().toISOString();
+  const ownerId = randomUUID();
+  const owner = {
+    role: "owner",
+    messageId: ownerId,
+    text: "Write a poem",
+    intent: "new_task",
+    taskId,
+    createdAt,
+    rev: 2,
+    asOf: 1,
+  };
+  await nats.publish(subject, JSON.stringify(viewMessage(topic, ownerId, 2, owner)));
+  const [, watch] = await all(page, "subscribed", 2);
+  expect(watch?.topics).toEqual([`task:${taskId}`]);
+
+  const live = page.locator(`#chat li[data-task-id="${taskId}"]`);
+  const delta = (attempt: number, i: number, text: string) =>
+    nats.publishDelta(`delta.${taskId}.${callId}`, JSON.stringify({ attempt, i, text }));
+  await delta(1, 0, "Roses ");
+  await delta(1, 1, "are red");
+  await expect(live).toHaveText("agent (attempt 1, live): Roses are red");
+  await page.screenshot({ path: test.info().outputPath("deltas.png") });
+
+  await delta(2, 0, "Violets ");
+  await delta(2, 1, "are blue");
+  await expect(live).toHaveText("agent (attempt 2, live): Violets are blue");
+  await page.screenshot({ path: test.info().outputPath("new-attempt.png") });
+
+  const replyId = randomUUID();
+  const reply = {
+    role: "agent",
+    messageId: replyId,
+    text: "Violets are blue, and so are you.",
+    taskId,
+    costMicroUsd: 800,
+    createdAt: new Date().toISOString(),
+    rev: 3,
+    asOf: 2,
+  };
+  await nats.publish(subject, JSON.stringify(viewMessage(topic, replyId, 3, reply)));
+  await expect(live).toHaveText("agent (final): Violets are blue, and so are you.");
+  await expect(live).toHaveClass("final");
+  await expect(page.locator("#chat li.owner")).toHaveText("owner: Write a poem");
+  await page.screenshot({ path: test.info().outputPath("final.png") });
+
+  const deltas = await all(page, "delta", 4);
+  expect(deltas.map((frame) => [frame.attempt, frame.i, frame.text])).toEqual([
+    [1, 0, "Roses "],
+    [1, 1, "are red"],
+    [2, 0, "Violets "],
+    [2, 1, "are blue"],
+  ]);
+  expect(deltas.every((frame) => frame.taskId === taskId && frame.callId === callId)).toBe(true);
+
+  await send(page, { type: "unsubscribe", topics: [topic, `task:${taskId}`] });
+  expect((await all(page, "unsubscribed"))[0]?.topics).toEqual([topic, `task:${taskId}`]);
+});

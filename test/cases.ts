@@ -292,28 +292,58 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     assert.equal(c.notices().length, 1);
   });
 
-  test(`${name}: deltas of subscribed tasks arrive, others do not`, async () => {
+  test(`${name}: deltas of subscribed tasks arrive with attempt, others do not`, async () => {
     const task = taskTopic();
     const other = taskTopic();
     const taskId = task.slice(5);
     const callId = randomUUID();
+    const subject = `delta.${taskId}.${callId}`;
     const { c } = await ready();
     await subscribed(c, [task]);
     await backend.publishDelta(
       `delta.${other.slice(5)}.${callId}`,
-      JSON.stringify({ i: 0, text: "x" }),
+      JSON.stringify({ attempt: 1, i: 0, text: "x" }),
     );
-    await backend.publishDelta(`delta.${taskId}.${callId}`, "not json");
-    await backend.publishDelta(`delta.${taskId}.${callId}`, JSON.stringify({ i: 1, text: "Hi" }));
-    assert.deepEqual(await c.next("delta"), { type: "delta", taskId, callId, i: 1, text: "Hi" });
+    await backend.publishDelta(subject, "not json");
+    await backend.publishDelta(subject, JSON.stringify({ i: 0, text: "no attempt" }));
+    await backend.publishDelta(subject, JSON.stringify({ attempt: 0, i: 0, text: "bad" }));
+    await backend.publishDelta(subject, JSON.stringify({ attempt: 1, i: 0, text: "Hi" }));
+    await backend.publishDelta(subject, JSON.stringify({ attempt: 2, i: 0, text: "Hello" }));
+    await waitFor(() => c.frames.filter((f) => f.type === "delta").length === 2, 5000, 10);
+    assert.deepEqual(
+      c.frames.filter((f) => f.type === "delta"),
+      [
+        { type: "delta", taskId, callId, attempt: 1, i: 0, text: "Hi" },
+        { type: "delta", taskId, callId, attempt: 2, i: 0, text: "Hello" },
+      ],
+    );
     c.send({ type: "unsubscribe", topics: [task] });
-    c.send({ type: "ping", t: 1 });
-    await c.next("pong");
-    await backend.publishDelta(`delta.${taskId}.${callId}`, JSON.stringify({ i: 2, text: "!" }));
+    assert.deepEqual(await c.next("unsubscribed"), { type: "unsubscribed", topics: [task] });
+    await backend.publishDelta(subject, JSON.stringify({ attempt: 2, i: 1, text: "!" }));
     c.send({ type: "ping", t: 2 });
     await c.next("pong");
     await sleep(100);
-    assert.equal(c.frames.filter((f) => f.type === "delta").length, 1);
+    assert.equal(c.frames.filter((f) => f.type === "delta").length, 2);
+  });
+
+  test(`${name}: unsubscribe answers with its topics, also for a topic that was not subscribed`, async () => {
+    const conversation = `conversation:${randomUUID()}` as const;
+    const { c } = await ready();
+    await subscribed(c, ["tasks", conversation]);
+    const seq = await notice(conversation);
+    assert.equal((await c.next("notice")).seq, seq);
+    c.send({ type: "unsubscribe", topics: [conversation, "budget"] });
+    assert.deepEqual(await c.next("unsubscribed"), {
+      type: "unsubscribed",
+      topics: [conversation, "budget"],
+    });
+    await notice(conversation);
+    const live = await notice("tasks");
+    await waitFor(() => c.notices().some((n) => n.seq === live), 5000, 10);
+    assert.deepEqual(
+      c.notices().map((n) => n.topic),
+      [conversation, "tasks"],
+    );
   });
 
   test(`${name}: at most 50 topics for each connection`, async () => {
@@ -410,7 +440,10 @@ export function protocolCases(name: string, makeBackend: () => Promise<Backend>)
     let deltas = 0;
     for (let i = 0; i < 600; i += 1) {
       await notice(task, randomUUID(), 1, big);
-      await backend.publishDelta(`delta.${taskId}.${callId}`, JSON.stringify({ i, text: "t" }));
+      await backend.publishDelta(
+        `delta.${taskId}.${callId}`,
+        JSON.stringify({ attempt: 1, i, text: "t" }),
+      );
       deltas += 1;
     }
     socket.resume();
