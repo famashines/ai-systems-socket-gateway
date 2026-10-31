@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- NATS from `kit/nats` (kit 0.3.0): connect, the `VIEWS` ordered
+  consumers and the `ws_connections` gauge. No direct `@nats-io/*`
+  dependency. The test `VIEWS` stream has `max_consumers` 64, as in gitops.
 - Optional `OIDC_JWKS_URL`: the verifier reads the keys from it; the `iss`
   check stays `OIDC_ISSUER`.
 - Release workflow: image, CycloneDX SBOM, grype scan, push to GHCR

@@ -25,7 +25,7 @@ Chromium for the harness:
 src
 ├── protocol.ts   frame parsing, sequences and topics, rate window; no I/O
 ├── gateway.ts    upgrade checks and one session for each socket; uses the Views port
-├── views.io.ts   NATS: connect, STREAM.INFO, ordered consumers, delta subscriptions
+├── views.io.ts   the Views port on kit/nats: VIEWS head, ordered consumers, delta subscriptions
 └── main.ts       config, wiring, start, shutdown
 test
 ├── cases.ts      the protocol suite, run on two backends
@@ -59,9 +59,12 @@ test
 - Kit and contracts come from git tags. A new tag needs a new
   `allowScripts` entry with the commit of the tag
   (`npm install-scripts approve <package>`).
-- `@nats-io/jetstream`, `@nats-io/transport-node` and `@opentelemetry/api`
-  have the exact versions of the kit, so there is one copy of each. Check
-  with `npm ls`. `kit/messaging` is not used: it loads `mongodb`.
+- NATS comes from `kit/nats` (connect with the inbox prefix, ordered
+  consumers, `observeGauge`). There is no direct `@nats-io/*` dependency,
+  also not in the tests: `test/nats.ts` sends JetStream API requests on the
+  kit connection. `kit/messaging` is not used: it loads `mongodb`.
+- `@opentelemetry/api` has the exact version of the kit, so there is one
+  copy. Check with `npm ls`.
 - TypeScript 6 (`typescript`, for ESLint) and 7 (`typescript-7`, for
   `check`): ADR 0022. Never run `npx tsc`.
 - The Docker build stage uses the full Node image, because npm needs `git`

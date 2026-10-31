@@ -12,6 +12,7 @@ import {
 } from "@famashines/ai-systems-contracts";
 import type { JwtVerifier } from "@famashines/ai-systems-kit/auth";
 import { UnavailableError } from "@famashines/ai-systems-kit/http";
+import { observeGauge } from "@famashines/ai-systems-kit/nats";
 import { metrics } from "@opentelemetry/api";
 import type { Logger } from "pino";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -128,15 +129,15 @@ export function attachGateway(options: GatewayOptions): Gateway {
   const stopFailures = meter.createCounter("ws_consumer_stop_failures", {
     description: "VIEWS consumers that did not stop or were not deleted",
   });
-  const live = meter.createObservableGauge("ws_connections", {
-    description: "Open WebSocket connections",
-  });
   const wss = new WebSocketServer({ noServer: true, maxPayload: WsLimits.clientFrameBytes });
   const sessions = new Set<Promise<void>>();
   let stopping = false;
-  live.addCallback((result) => {
-    result.observe(wss.clients.size);
-  });
+  const removeGauge = observeGauge(
+    "ai-systems-socket-gateway",
+    "ws_connections",
+    "Open WebSocket connections",
+    () => wss.clients.size,
+  );
 
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (request.url ?? "/").split("?")[0];
@@ -444,13 +445,17 @@ export function attachGateway(options: GatewayOptions): Gateway {
     connections: () => wss.clients.size,
     async close(drainDelayMs = 0) {
       stopping = true;
-      await sleep(drainDelayMs);
-      for (const ws of wss.clients) ws.close(WsCloseCode.serverRestart, "server restart");
-      const all = Promise.all(sessions);
-      if (await within(all, timers.closeGraceMs)) return;
-      for (const ws of wss.clients) ws.terminate();
-      if (!(await within(all, timers.sessionsEndMs))) {
-        logger.error({ sessions: sessions.size }, "sessions did not end in time");
+      try {
+        await sleep(drainDelayMs);
+        for (const ws of wss.clients) ws.close(WsCloseCode.serverRestart, "server restart");
+        const all = Promise.all(sessions);
+        if (await within(all, timers.closeGraceMs)) return;
+        for (const ws of wss.clients) ws.terminate();
+        if (!(await within(all, timers.sessionsEndMs))) {
+          logger.error({ sessions: sessions.size }, "sessions did not end in time");
+        }
+      } finally {
+        removeGauge();
       }
     },
   };

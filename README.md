@@ -157,7 +157,7 @@ have no `seq` and are best effort (ADR 0019).
 | `REQUIRED_ROLE`                                                     | `owner`                                             |                                                                                                           |
 | `ALLOWED_ORIGINS`                                                   | `https://ai.famashines.com`                         | comma list of exact origins (`scheme://host:port`). An empty value allows only requests with no `Origin`. |
 | `MAX_PENDING_HELLO`                                                 | `16`                                                | sockets for each pod that wait for `hello`                                                                |
-| `MAX_CONNECTIONS`                                                   | `48`                                                | authenticated sessions for each pod; below the planned `max_consumers` 64 of `VIEWS`                      |
+| `MAX_CONNECTIONS`                                                   | `48`                                                | authenticated sessions for each pod; below the `max_consumers` 64 of `VIEWS`                              |
 | `MAX_CONNECTIONS_PER_SUBJECT`                                       | `8`                                                 | sockets for each `sub`                                                                                    |
 | `PORT`                                                              | `8080`                                              |                                                                                                           |
 | `LOG_LEVEL`                                                         | `info`                                              |                                                                                                           |
@@ -195,8 +195,8 @@ repo. A manual run (`workflow_dispatch`) works only on `main`.
 
 ## Known limits
 
-- One ordered consumer for each connection. ADR 0025 plans `max_consumers`
-  64 on `VIEWS`, so `MAX_CONNECTIONS` is 48 for each pod. Two pods can
+- One ordered consumer for each connection. gitops sets `max_consumers` 64
+  on `VIEWS` (ADR 0025), so `MAX_CONNECTIONS` is 48 for each pod. Two pods can
   together pass 64; then a consumer create fails and that socket closes
   `1013`.
 - After a crash of the pod, its consumers are not deleted. NATS removes
@@ -204,10 +204,10 @@ repo. A manual run (`workflow_dispatch`) works only on `main`.
   ordered consumer). Until then they count against that limit.
 - A shutdown waits at most 1 s for the close handshakes, terminates the
   rest, then waits at most 5 s for the sessions to stop their consumers.
-- The gateway connects to NATS with `@nats-io/transport-node` and the kit
-  rules (name, inbox prefix `_INBOX_socket-gateway`, no reconnect limit,
-  wait on the first connect). It does not use `kit/messaging`, because that
-  export loads `mongodb`, and a gateway does not install it.
+- The gateway connects to NATS with `kit/nats` (name, inbox prefix
+  `_INBOX_socket-gateway`, no reconnect limit, wait on the first connect).
+  It does not use `kit/messaging`, because that export loads `mongodb`,
+  and a gateway does not install it.
 
 ## Commands and tests
 
