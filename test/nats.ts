@@ -72,7 +72,7 @@ interface StreamInfo {
 }
 
 async function api<T>(nats: Nats, subject: string, data = ""): Promise<T> {
-  const answer = (await nats.connection.request(subject, data)).json<
+  const answer = (await nats.connection.request(subject, data, { timeout: 5000 })).json<
     T & { error?: { description: string } }
   >();
   if (answer.error) throw new Error(`${subject}: ${answer.error.description}`);

@@ -132,7 +132,7 @@ export function attachGateway(options: GatewayOptions): Gateway {
   const wss = new WebSocketServer({ noServer: true, maxPayload: WsLimits.clientFrameBytes });
   const sessions = new Set<Promise<void>>();
   let stopping = false;
-  observeGauge(
+  const removeGauge = observeGauge(
     "ai-systems-socket-gateway",
     "ws_connections",
     "Open WebSocket connections",
@@ -445,13 +445,17 @@ export function attachGateway(options: GatewayOptions): Gateway {
     connections: () => wss.clients.size,
     async close(drainDelayMs = 0) {
       stopping = true;
-      await sleep(drainDelayMs);
-      for (const ws of wss.clients) ws.close(WsCloseCode.serverRestart, "server restart");
-      const all = Promise.all(sessions);
-      if (await within(all, timers.closeGraceMs)) return;
-      for (const ws of wss.clients) ws.terminate();
-      if (!(await within(all, timers.sessionsEndMs))) {
-        logger.error({ sessions: sessions.size }, "sessions did not end in time");
+      try {
+        await sleep(drainDelayMs);
+        for (const ws of wss.clients) ws.close(WsCloseCode.serverRestart, "server restart");
+        const all = Promise.all(sessions);
+        if (await within(all, timers.closeGraceMs)) return;
+        for (const ws of wss.clients) ws.terminate();
+        if (!(await within(all, timers.sessionsEndMs))) {
+          logger.error({ sessions: sessions.size }, "sessions did not end in time");
+        }
+      } finally {
+        removeGauge();
       }
     },
   };
