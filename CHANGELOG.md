@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Optional `OIDC_JWKS_URL`: the verifier reads the keys from it; the `iss`
+  check stays `OIDC_ISSUER`.
+
 ## 0.1.0
 
 - `/ws` WebSocket protocol v1 (ARCHITECTURE 10): `hello` with the access

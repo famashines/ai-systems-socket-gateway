@@ -147,21 +147,22 @@ have no `seq` and are best effort (ADR 0019).
 
 ## Configuration
 
-| Variable                                                            | Default                                         | Rule                                                                                                      |
-| ------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `NATS_SERVERS`                                                      | none                                            | comma list                                                                                                |
-| `NATS_USER`, `NATS_PASSWORD`                                        | none                                            | the user `ai-systems-socket-gateway`                                                                      |
-| `OIDC_ISSUER`                                                       | `https://auth.famashines.com/realms/ai-systems` | the JWKS is `<issuer>/protocol/openid-connect/certs`                                                      |
-| `OIDC_AUDIENCE`                                                     | `ai-systems-app`                                |                                                                                                           |
-| `REQUIRED_ROLE`                                                     | `owner`                                         |                                                                                                           |
-| `ALLOWED_ORIGINS`                                                   | `https://ai.famashines.com`                     | comma list of exact origins (`scheme://host:port`). An empty value allows only requests with no `Origin`. |
-| `MAX_PENDING_HELLO`                                                 | `16`                                            | sockets for each pod that wait for `hello`                                                                |
-| `MAX_CONNECTIONS`                                                   | `48`                                            | authenticated sessions for each pod; below the planned `max_consumers` 64 of `VIEWS`                      |
-| `MAX_CONNECTIONS_PER_SUBJECT`                                       | `8`                                             | sockets for each `sub`                                                                                    |
-| `PORT`                                                              | `8080`                                          |                                                                                                           |
-| `LOG_LEVEL`                                                         | `info`                                          |                                                                                                           |
-| `RELEASE`                                                           | `local`                                         | the image sets it                                                                                         |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none                                            | traces go out only when one is set                                                                        |
+| Variable                                                            | Default                                             | Rule                                                                                                      |
+| ------------------------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `NATS_SERVERS`                                                      | none                                                | comma list                                                                                                |
+| `NATS_USER`, `NATS_PASSWORD`                                        | none                                                | the user `ai-systems-socket-gateway`                                                                      |
+| `OIDC_ISSUER`                                                       | `https://auth.famashines.com/realms/ai-systems`     | the token `iss` must be this value                                                                        |
+| `OIDC_JWKS_URL`                                                     | none: `<OIDC_ISSUER>/protocol/openid-connect/certs` | the key source; on the cluster the in-cluster Keycloak URL, so the pod does not go out through Traefik    |
+| `OIDC_AUDIENCE`                                                     | `ai-systems-app`                                    |                                                                                                           |
+| `REQUIRED_ROLE`                                                     | `owner`                                             |                                                                                                           |
+| `ALLOWED_ORIGINS`                                                   | `https://ai.famashines.com`                         | comma list of exact origins (`scheme://host:port`). An empty value allows only requests with no `Origin`. |
+| `MAX_PENDING_HELLO`                                                 | `16`                                                | sockets for each pod that wait for `hello`                                                                |
+| `MAX_CONNECTIONS`                                                   | `48`                                                | authenticated sessions for each pod; below the planned `max_consumers` 64 of `VIEWS`                      |
+| `MAX_CONNECTIONS_PER_SUBJECT`                                       | `8`                                                 | sockets for each `sub`                                                                                    |
+| `PORT`                                                              | `8080`                                              |                                                                                                           |
+| `LOG_LEVEL`                                                         | `info`                                              |                                                                                                           |
+| `RELEASE`                                                           | `local`                                             | the image sets it                                                                                         |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none                                                | traces go out only when one is set                                                                        |
 
 `.env.example` lists them with no values. The service has no database.
 
