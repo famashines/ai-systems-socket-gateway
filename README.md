@@ -1,2 +1,172 @@
 # ai-systems-socket-gateway
-WebSocket gateway of ai-systems
+
+The WebSocket gateway of ai-systems. The app connects to `/ws`. The gateway
+checks the access token, reads the change notices of the read models from
+the JetStream stream `VIEWS`, and sends them to the app with the stream
+sequence. On a reconnect the app sends its last sequence, and the gateway
+sends the notices that the app did not get, once and in order. It also
+forwards live token deltas from core NATS. It has no database and keeps no
+state of its own, so it can restart at any time.
+
+```
+app --WSS /ws--> Traefik --> socket-gateway --JWKS--> Keycloak (realm ai-systems)
+                                  |   ^
+           ordered consumer, one  |   | notices (seq = VIEWS sequence)
+           for each connection    v   |
+                        NATS VIEWS (view.>)  <-- projections (outbox relay)
+                        core NATS delta.<taskId>.<callId>  <-- ai-proxy (from M2)
+```
+
+Architecture and reasons: `ai-systems-docs` (`ARCHITECTURE.md` 2, 10, 11
+and 12; ADR 0004, 0009, 0010, 0019, 0021, 0023 and 0025).
+
+## Endpoints
+
+| Path       | Does                                                              |
+| ---------- | ----------------------------------------------------------------- |
+| `/ws`      | WebSocket upgrade. Every other path gives 404 at the upgrade.     |
+| `/health`  | Liveness: 200 while the process runs                              |
+| `/ready`   | Readiness: 200 when `$JS.API.STREAM.INFO.VIEWS` answers, else 503 |
+| `/metrics` | Prometheus metrics                                                |
+
+## Protocol
+
+JSON text frames, checked with `ClientMessageV1` and `ServerMessageV1` of
+`@famashines/ai-systems-contracts` v0.2.0. The message list is in
+`ARCHITECTURE.md` 10.1.
+
+```
+app                                   socket-gateway                       VIEWS
+ | hello { v, token, lastSeq? } ------> | verify token (kit/auth)             |
+ |                                      | STREAM.INFO ----------------------> |
+ | <---------- welcome { sessionId, headSeq, heartbeatMs }                    |
+ | <---------- resync { too_old }       (only if lastSeq is not in VIEWS)     |
+ | subscribe { topics } --------------> |                                     |
+ | <---------- subscribed { topics, fromSeq }                                 |
+ |                                      | ordered consumer from fromSeq ----> |
+ | <---------- notice { seq, topic, docId, rev, data, commandId? } <--------- |
+ | GET /api/... snapshot (api-gateway), after subscribed                      |
+```
+
+### Rules
+
+| Rule                                                                                               | Result                                                                          |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| No `hello` in 5 s, or another frame before it                                                      | close `4401`                                                                    |
+| Token not valid, wrong role, expired                                                               | close `4401`                                                                    |
+| JWKS cannot be read at `hello`                                                                     | close `1013` (try again later); the app does not sign out                       |
+| Token expiry (`exp`) with no `reauth` before it                                                    | close `4401`                                                                    |
+| `reauth` with a valid token for the same `sub`                                                     | the new `exp` is the limit                                                      |
+| `reauth` with another `sub` or a bad token                                                         | close `4401`                                                                    |
+| `reauth` while the JWKS cannot be read                                                             | `error { code: "unavailable" }`; the old token stays valid until its `exp`      |
+| A frame that is not valid JSON or not `ClientMessageV1` (strict), a binary frame, a second `hello` | close `4400`                                                                    |
+| A frame over 64 KiB                                                                                | close `1009` (the `ws` library, "message too big")                              |
+| More than 20 frames in one second                                                                  | close `4429`                                                                    |
+| No pong in 10 s after a protocol ping (each 20 s)                                                  | the socket is terminated (the client sees `1006`)                               |
+| App `ping { t }`                                                                                   | `pong { t }`                                                                    |
+| Send buffer over 1 MiB                                                                             | `delta` frames are dropped (counted)                                            |
+| Send buffer over 4 MiB                                                                             | close `4408`; the app resumes with `lastSeq`, so no notice is lost              |
+| `Origin` header not in `ALLOWED_ORIGINS`                                                           | 403 at the upgrade. No `Origin` (the native app) is allowed.                    |
+| SIGTERM                                                                                            | `/ready` 503, new upgrades 503; after the drain delay each socket closes `1012` |
+| A frame that fails while NATS is down                                                              | close `1013`; the app resumes                                                   |
+
+### Topics
+
+M1 topics: `tasks`, `task:<id>`, `budget`, `agents`, `notifications` (the
+`Topic` schema of contracts v0.2.0).
+
+- An unknown topic (also `conversation:<id>` before contracts has it) fails
+  the strict `ClientMessageV1` schema, so it closes `4400`. The app and the
+  gateway use the same contracts version.
+- More than 50 topics in one frame fails the schema (`4400`). More than 50
+  topics in total over several frames gives
+  `error { code: "validation_failed" }`, no change and no close.
+- No topic is forbidden in M1 (one owner), so `4403` is not used yet.
+- `unsubscribe` has no answer: contracts has no `unsubscribed` message, and
+  `subscribed.topics` must have at least one topic.
+
+### Sequences
+
+- `welcome.headSeq` is the last sequence of `VIEWS` at `hello`.
+- `hello.lastSeq` given: the first `subscribe` starts at `lastSeq + 1`, and
+  `fromSeq` is `lastSeq + 1`. If `lastSeq + 1` is below the first sequence
+  of `VIEWS` (older than the 7 days of the stream), or `lastSeq` is above
+  the last sequence (the stream was made again), the gateway sends
+  `resync { reason: "too_old" }` after `welcome` and continues as if no
+  `lastSeq` came.
+- No `lastSeq`: the first `subscribe` starts at the last sequence of `VIEWS`
+  (read at that `subscribe`) plus 1. So a change between `subscribed` and the
+  snapshot read is not lost, and the app drops a notice by its `rev`.
+- A new topic in a later `subscribe` starts at the last sequence at that
+  `subscribe` plus 1. `fromSeq` is the lowest start of the topics in the
+  frame.
+- A subscribe change stops the consumer and starts a new one at the last
+  sequence that the connection got plus 1, with the new filter subjects.
+  The gateway drops each message with a sequence that is not higher than
+  the last one, so nothing is lost and nothing is sent two times.
+- A `VIEWS` message that is not a valid `ViewMessageV1` (or whose subject is
+  not its `type`) is skipped and counted.
+
+### Delivery
+
+One ordered consumer for each connection, with the filter subjects of its
+topics (`viewSubject(topic)`). It is ephemeral, in memory, with no ack, and
+the gateway deletes it when the socket closes. This needs only the ADR 0023
+grants of `ai-systems-socket-gateway` and no shared state. A shared consumer
+for each pod with fan-out in the process is not necessary for one owner.
+
+### Deltas
+
+For each `task:<id>` topic the gateway subscribes core NATS
+`delta.<id>.*`. Contracts v0.2.0 has no delta message for NATS yet (task
+M2-02). The gateway takes `taskId` and `callId` from the subject and reads
+the body as JSON `{ "i": <int>, "text": "<string>" }`, then checks the
+frame with `ServerMessageV1`. A body that does not fit is dropped. Deltas
+have no `seq` and are best effort (ADR 0019).
+
+## Configuration
+
+| Variable                                                            | Default                                         | Rule                                                                       |
+| ------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `NATS_SERVERS`                                                      | none                                            | comma list                                                                 |
+| `NATS_USER`, `NATS_PASSWORD`                                        | none                                            | the user `ai-systems-socket-gateway`                                       |
+| `OIDC_ISSUER`                                                       | `https://auth.famashines.com/realms/ai-systems` | the JWKS is `<issuer>/protocol/openid-connect/certs`                       |
+| `OIDC_AUDIENCE`                                                     | `ai-systems-app`                                |                                                                            |
+| `REQUIRED_ROLE`                                                     | `owner`                                         |                                                                            |
+| `ALLOWED_ORIGINS`                                                   | empty                                           | comma list of origins (`scheme://host:port`). Keep it empty in production. |
+| `PORT`                                                              | `8080`                                          |                                                                            |
+| `LOG_LEVEL`                                                         | `info`                                          |                                                                            |
+| `RELEASE`                                                           | `local`                                         | the image sets it                                                          |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none                                            | traces go out only when one is set                                         |
+
+`.env.example` lists them with no values. The service has no database.
+
+## Metrics
+
+| Metric                           | Labels   |
+| -------------------------------- | -------- |
+| `ws_connections` (gauge)         |          |
+| `ws_connections_opened_total`    |          |
+| `ws_connections_closed_total`    | `code`   |
+| `ws_upgrades_refused_total`      | `status` |
+| `ws_frames_received_total`       |          |
+| `ws_frames_sent_total`           | `type`   |
+| `ws_deltas_dropped_total`        |          |
+| `ws_view_messages_invalid_total` |          |
+
+## Known limits
+
+- One ordered consumer for each connection. ADR 0025 plans `max_consumers`
+  64 on `VIEWS`, so a pod then serves at most 64 connections at a time
+  (minus other readers of `VIEWS`). Enough for one owner with a few devices.
+- A slow consumer (`4408`) or a shutdown close waits for the close
+  handshake. `ws` terminates a slow consumer after 30 s; a shutdown
+  terminates the sockets that remain after 2 s.
+- The gateway connects to NATS with `@nats-io/transport-node` and the kit
+  rules (name, inbox prefix `_INBOX_socket-gateway`, no reconnect limit,
+  wait on the first connect). It does not use `kit/messaging`, because that
+  export loads `mongodb`, and a gateway does not install it.
+
+## Commands and tests
+
+See `CLAUDE.md`.
